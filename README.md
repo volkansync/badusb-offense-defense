@@ -88,12 +88,12 @@ Attacker gets stronger going down. Defense has to answer each rung to move on.
 | # | Attacker technique | Defense answer | Status |
 |---|---|---|---|
 | 1 | Keystroke injection at machine speed (visible typing) | Watch the device layer for a new keyboard; measure inter-key timing; **grab** the device when it types faster than any human | ✅ done |
-| 2 | **Execution**, not just typing — drive a focused shell to run a benign command | Same detector; prove the command is cut off mid-keystroke before it completes | 🔜 next |
-| 3 | **Evade the timing signal** — type slowly, with human-like jitter | Timing alone fails → default-deny new keyboards; flag a device that types the instant it connects with no human plug event | ⬜ planned |
+| 2 | **Execution**, not just typing — drive a focused shell to run a benign command | Same detector; the command is cut off mid-keystroke before it completes | ✅ done |
+| 3 | **Evade the timing signal** — type slowly, with human-like jitter | Timing alone fails → **default-deny**: block every new keyboard the instant it registers, before it can type; release only on explicit human approval | ✅ done |
 | 4 | **Impersonate** a real keyboard (spoof the name / a real VID:PID) | Identity is forgeable → don't trust the name; require explicit authorization | ⬜ planned |
 | 5 | **Physical** device (Raspberry Pi Pico), composite storage + HID | Move to the USB layer: USBGuard allow-list + composite-interface anomaly | ⬜ hardware stage |
 
-**Currently: rung 1 complete, rung 2 in progress.**
+**Currently: rungs 1–3 complete; rung 4 (impersonation) next.**
 
 ---
 
@@ -117,6 +117,25 @@ attack  →  a new keyboard registers  →  detector sees it (can't be hidden)
         →  grab: further keystrokes are swallowed  →  the payload is cut off mid-word
 ```
 
+**`attack/rogue_exec.py`** (rung 2) — the same virtual keyboard, but instead of typing into
+a text field it drives a focused shell to run a benign command (`echo … > /tmp/labbadusb.txt`).
+It proves HID injection can *execute*, not just type.
+
+**`attack/rogue_slow.py`** (rung 3) — the same payload typed slowly, with random human-like
+gaps between keys. The inter-key timing in `usb_watch.py` never trips, so it walks straight
+past the cadence detector. This is the rung that breaks signal 2.
+
+**`defense/usb_guard.py`** (rung 3's answer) — stops judging behaviour at all. Timing can be
+faked; authorization cannot. So it **default-denies**: it `grab()`s every new keyboard the
+instant it registers — before a single key is sent — and releases it only when a human
+approves, answering on the keyboard that was already present. A device cannot vouch for itself.
+
+```
+rung 3  →  attacker types slowly, human-like  →  timing detector sees nothing wrong
+        →  but it still had to register        →  guard grabs it on arrival anyway
+        →  blocked until a human says yes       →  a device cannot approve itself
+```
+
 ---
 
 ## Run it
@@ -131,6 +150,11 @@ python -m venv .venv
 # terminal 2 — the attacker
 .venv/bin/python attack/rogue_keyboard.py
 ```
+
+For **rung 3**, swap both sides: run the default-deny guard against the slow attacker —
+`defense/usb_guard.py` in terminal 1, `attack/rogue_slow.py` in terminal 2. The timing
+detector in `usb_watch.py` would see nothing wrong; the guard blocks it on arrival anyway,
+then asks you to approve it.
 
 Reading and creating input devices needs access to `/dev/uinput` and `/dev/input/event*`.
 The clean way is to be in the `input` group (no `sudo`); otherwise run with `sudo`.
@@ -161,8 +185,11 @@ attacker. Only the first few characters land — the rest are gone.
 - **The virtual attacker has no USB identity.** It isn't on the USB bus, so USBGuard has
   nothing to act on. That's why the software rungs defend at the input/evdev layer and
   USBGuard is deferred to the physical (Pico) stage — two layers, two tools, kept separate.
-- **Timing is only the first signal.** Rung 3 exists precisely to break it. A detector that
-  relied on speed alone would be evaded by an attacker patient enough to type slowly.
+- **Timing is only the first signal.** Rung 3 breaks it: an attacker patient enough to type
+  slowly walks past the cadence detector. The answer isn't a cleverer timing test — it's to
+  give up on behaviour entirely and default-deny, since arrival is the one thing the attacker
+  can't avoid. That trades convenience (every new keyboard now needs a yes) for a signal that
+  can't be faked.
 
 ---
 
