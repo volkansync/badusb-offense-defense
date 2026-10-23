@@ -15,8 +15,10 @@ so it never fires the "add" event we react to. Only a device that shows up AFTER
 we begin watching is treated as untrusted. That is the one thing the attacker
 cannot avoid: to type, it must first register, and registration always shows.
 
-Step 1 (this file): block on arrival.
-Step 2 (next): ask a human to approve, then release.
+Step 1: block on arrival.
+Step 2: ask a human to approve, then release. The prompt is answered on the
+real keyboard — which was present first and so was never grabbed — so a device
+cannot approve itself. Default-deny in full: silent until a human vouches for it.
 """
 
 import pyudev
@@ -40,8 +42,21 @@ print("[*] Default-deny guard armed.")
 print("[*] Every keyboard that appears from now on is blocked on arrival.")
 print("[*] Your current keyboard was here first — it is left untouched.")
 
-# Keep references so the grabs stay alive for the life of the process.
-blocked = []
+# Keep references so grabbed/approved devices are not garbage-collected (which
+# would close them and silently release the grab).
+held = []
+
+
+def ask_human(dev, node):
+    """Prompt on the real keyboard. Return True to approve (release) the device."""
+    print(f"[?] Approve new keyboard {dev.name!r} ({node})?")
+    print("    A device cannot answer this — only you can, on the keyboard you")
+    print("    were already using. [y = release / anything else = keep blocked]")
+    try:
+        answer = input("    approve> ").strip().lower()
+    except EOFError:
+        answer = ""
+    return answer == "y"
 
 for udev_device in iter(monitor.poll, None):
     if udev_device.action != "add":
@@ -67,7 +82,12 @@ for udev_device in iter(monitor.poll, None):
         print(f"[-] {dev.name} vanished before it could be blocked.")
         continue
 
-    blocked.append(dev)
+    held.append(dev)
     print(f"[!] BLOCKED on arrival: {dev.name}  ({node})")
     print("    Not one keystroke from it reaches any application.")
-    print("    Awaiting human approval (step 2).")
+
+    if ask_human(dev, node):
+        dev.ungrab()
+        print(f"[+] APPROVED: {dev.name} released — its keystrokes now flow.")
+    else:
+        print(f"[x] DENIED: {dev.name} stays blocked.")
